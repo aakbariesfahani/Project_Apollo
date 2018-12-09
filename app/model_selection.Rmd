@@ -1,0 +1,201 @@
+---
+title: "MedMen Churn Model"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(ggROC)
+library(tidyposterior)
+library(plyr)
+library(caret)
+library(randomForest)
+library(tidymodels)
+library(gbm)
+library(DataExplorer)
+library(tidyverse)
+library(pROC)
+library(e1071)
+
+# loading data -------------------------------------------------------------------------------
+
+churn_data <- read_csv("data/src/WA_Fn-UseC_-Telco-Customer-Churn.csv") %>% 
+     filter(!is.na(TotalCharges)) %>%
+     select(-customerID)
+
+
+# data sampling ------------------------------------------------------------------------------
+
+seed <- 7312
+set.seed(seed)
+data_split <- initial_split(churn_data, strata = "Churn")
+churn_train <- training(data_split)
+churn_test  <- testing(data_split) %>%
+  mutate(Churn = as.factor(Churn))
+
+trainX <- churn_train %>%
+     select(-Churn)
+trainY <- churn_train %>%
+     select(Churn)
+
+plot_roc <- function(x) {
+        averaged <- x %>%
+                group_by(rowIndex, obs) %>%
+                summarise(Yes = mean(Yes, na.rm = TRUE))
+        roc_obj <- roc(
+                response = x[["obs"]], 
+                predictor = x[["Yes"]], 
+                levels = rev(levels(x$obs))
+        )
+        return(roc_obj)
+}
+
+```
+
+Model Selection
+===================================== 
+
+Column {data-width=250}
+-----------------------------------------------------------------------
+
+### Model 1 Performance (Generalized Boosted Modeling)
+
+```{r}
+
+load("models/model_1.Rdata")
+
+
+# model accuracy ----------------------------------------------------------------------------
+
+roc_gbm <- plot_roc(gbm_mod$pred)
+
+ggroc(roc_gbm, alpha = 0.5, colour = "red", size = 1.5)
+```
+
+### Model 2 Performance (Random Forest)
+
+```{r}
+load("models/rf_mod.Rdata")
+
+# model accuracy ----------------------------------------------------------------------------
+
+roc_rf <- plot_roc(rf_mod$pred)
+
+ggroc(roc_rf, alpha = 0.5, colour = "darkblue", size = 1.5)
+```
+
+### Model 3 Performance (Support Vector Machine)
+
+```{r}
+load("models/svm_mod.Rdata")
+
+# model accuracy ----------------------------------------------------------------------------
+
+roc_svm <- plot_roc(svm_mod$pred)
+
+ggroc(roc_svm, alpha = 0.5, colour = "blue", size = 1.5)
+```
+
+Column {data-width=750}
+-----------------------------------------------------------------------
+
+### Model Selection
+
+```{r, include=FALSE}
+rs <- resamples(
+     list(Boosting = gbm_mod, RndmFrst = rf_mod, SVM = svm_mod)
+)
+
+roc_mod <- suppressMessages(perf_mod(rs, seed = seed, iter = 5000))
+
+roc_dist <- tidy(roc_mod)
+```
+
+```{r}
+ggplot(roc_dist)
+```
+
+
+Model Appliction
+===================================== 
+
+```{r, include=FALSE}
+test_res <- churn_test %>%
+    dplyr::select(Churn) %>%
+  mutate(Churn = factor(Churn)) %>%
+    mutate(
+        pred = factor(predict(gbm_mod, churn_test)),
+        prob = predict(gbm_mod, churn_test, type = "prob")[, "Yes"]
+    ) %>%
+  data.frame
+roc_curve <- roc(test_res$Churn, test_res$prob, levels = c("No", "Yes"))
+
+prediction <- predict(gbm_mod, churn_test %>% select(-Churn))
+
+temp <- confusionMatrix(prediction, churn_test$Churn)
+```
+
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Method used
+
+We used Bayesian Hierarchical Linear Model to make our model selection. The distribution of the variance parameters are the prior distributions. The `tidyposterior` package, using *Stan*, is used to perform Bayesian analysis to estimate the probability distribution of the model parameters. Next, we make our decision looking at the difference between the models and selecting the best model that fits in our required business parameter or a practical value that represents our interest.
+
+### Why this model was chosen
+
+```{r, echo=FALSE}
+differences <-
+     contrast_models(
+          roc_mod,
+          list_1 = c("RndmFrst", "SVM"),
+          list_2 = c("Boosting", "RndmFrst"),
+          seed = 650
+     )
+
+summary(differences, size = 0.5)
+```
+
+### Testset Scoring (ROC)
+
+```{r}
+ggroc(roc_curve, alpha = 0.5, colour = "green", size = 1.5)
+```
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### Sensitivity - False Prediction rate of Member staying {.value-box}
+
+```{r sens}
+renderValueBox({
+  rate <- formatC(temp$byClass[1], digits = 2, format = "f")
+  valueBox(
+    value = rate,
+    color = if (rate > 80.00) "warning" else "primary"
+  )
+})
+```
+
+### Specificity - False Prediction rate of Member leaving {.value-box}
+
+```{r spec}
+renderValueBox({
+  rate <- formatC(temp$byClass[2], digits = 2, format = "f")
+  valueBox(
+    value = rate,
+    color = if (rate > 50.00) "warning" else "primary"
+  )
+})
+```
+
+### Confusion Matrix
+
+```{r table}
+temp
+```

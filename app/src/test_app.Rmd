@@ -1,0 +1,91 @@
+---
+title: "AI Model Selector"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r functions, echo=FALSE}
+plot_roc <- function(x) {
+        averaged <- x %>%
+                group_by(rowIndex, obs) %>%
+                summarise(Yes = mean(Yes, na.rm = TRUE))
+        roc_obj <- roc(
+                response = x[["obs"]], 
+                predictor = x[["Yes"]], 
+                levels = rev(levels(x$obs))
+        )
+        return(roc_obj)
+}
+```
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(ggROC)
+library(tidyposterior)
+library(plyr)
+library(caret)
+library(randomForest)
+library(tidymodels)
+library(gbm)
+library(DataExplorer)
+library(tidyverse)
+library(pROC)
+library(e1071)
+library(shiny)
+```
+
+Inputs {.sidebar data-width=300}
+-----------------------------------------------------------------------
+
+```{r}
+# shiny inputs defined here
+fileInput("file_1", label = "Upload your first model file as Rdata")
+fileInput("file_2", label = "Upload your second model file as Rdata")
+fileInput("file_3", label = "Upload your third model file as Rdata")
+
+actionButton(inputId = "load", "Load your model?")
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Overlapping ROC Curve for all three models
+
+```{r, echo=FALSE}
+env <<- NULL
+
+load_data <- function() {
+    if(is.null(input$file_1)) {return(NULL)}
+    infile1 <- isolate({input$file_1})
+    if(is.null(input$file_2)) {return(NULL)}
+    infile2 <- isolate({input$file_2})
+    if(is.null(input$file_3)) {return(NULL)}
+    infile3 <- isolate({input$file_3})
+    
+    m.env <- new.env()
+    env <<- m.env
+    load(infile1$datapath,envir = m.env)
+    n.env <- new.env()
+    env <<- n.env
+    load(infile2$datapath,envir = n.env)
+    p.env <- new.env()
+    env <<- p.env
+    load(infile3$datapath,envir = p.env)
+    
+    
+    output$modelAll <- renderPlot({
+      roc_mod1 <- plot_roc(m.env$model1$pred)
+      roc_mod2 <- plot_roc(n.env$model2$pred)
+      roc_mod3 <- plot_roc(p.env$model3$pred)
+      ggroc(list(GBM=roc_mod1, SVM=roc_mod2))
+    })
+}
+
+observeEvent(input$load,{
+  load_data()
+})
+plotOutput("modelAll")
+```
