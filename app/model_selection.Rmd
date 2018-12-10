@@ -1,5 +1,5 @@
 ---
-title: "MedMen Churn Model"
+title: "Project Apollo"
 output: 
   flexdashboard::flex_dashboard:
     orientation: columns
@@ -7,195 +7,297 @@ output:
 runtime: shiny
 ---
 
-```{r setup, include=FALSE}
+```{r, echo=FALSE}
+options(shiny.maxRequestSize=15*1024^2)
+
 library(flexdashboard)
+library(tidyverse)
 library(ggROC)
 library(tidyposterior)
-library(plyr)
-library(caret)
-library(randomForest)
-library(tidymodels)
-library(gbm)
-library(DataExplorer)
-library(tidyverse)
 library(pROC)
+library(caret)
+library(gbm)
+library(shiny)
+library(tidymodels)
 library(e1071)
-
-# loading data -------------------------------------------------------------------------------
-
-churn_data <- read_csv("data/src/WA_Fn-UseC_-Telco-Customer-Churn.csv") %>% 
-     filter(!is.na(TotalCharges)) %>%
-     select(-customerID)
-
-
-# data sampling ------------------------------------------------------------------------------
+library(randomForest)
 
 seed <- 7312
 set.seed(seed)
-data_split <- initial_split(churn_data, strata = "Churn")
-churn_train <- training(data_split)
-churn_test  <- testing(data_split) %>%
-  mutate(Churn = as.factor(Churn))
-
-trainX <- churn_train %>%
-     select(-Churn)
-trainY <- churn_train %>%
-     select(Churn)
 
 plot_roc <- function(x) {
-        averaged <- x %>%
-                group_by(rowIndex, obs) %>%
-                summarise(Yes = mean(Yes, na.rm = TRUE))
-        roc_obj <- roc(
-                response = x[["obs"]], 
-                predictor = x[["Yes"]], 
-                levels = rev(levels(x$obs))
-        )
-        return(roc_obj)
+    averaged <- x %>%
+        group_by(rowIndex, obs) %>%
+        summarise(Yes = mean(Yes, na.rm = TRUE))
+    roc_obj <- roc(
+        response = x[["obs"]], 
+        predictor = x[["Yes"]], 
+        levels = rev(levels(x$obs))
+    )
+    return(roc_obj)
 }
+
+```
+
+Sidebar {.sidebar}
+=====================================
+
+```{r}
+# shiny inputs defined here
+fileInput("file1", label = "Upload Model 1 Rdata")
+fileInput("file2", label = "Upload Model 2 Rdata")
+fileInput("file3", label = "Upload Model 3 Rdata")
+fileInput("testdata", label = "Upload test data")
+
+actionButton(inputId="btnLoad","Load")
+
+numericInput("perdid",
+             "Enter Practical Difference Percentage", 
+            2.5  ,min = 1, max = 100)
+
 
 ```
 
 Model Selection
 ===================================== 
 
-Column {data-width=250}
+Column {data-width=350}
 -----------------------------------------------------------------------
 
-### Model 1 Performance (Generalized Boosted Modeling)
+### ROC Performance of all Models
 
 ```{r}
+env <<- NULL
+    
+load_roc <- function(){
+  # Message catch
+  if(is.null(input$file1)) return(NULL)
+  if(is.null(input$file2)) return(NULL)
+  if(is.null(input$file3)) return(NULL)
+  # creating load files inside one render function
+  inFile1 <- isolate({ input$file1 })
+  inFile2 <- isolate({ input$file2 })
+  inFile3 <- isolate({ input$file3 })
+  # Create new environment to load data into
+  n.env  <- new.env()
+  env    <<- n.env
+  # Loading files in new environment
+  load(inFile1$datapath, envir=n.env)
+  load(inFile2$datapath, envir=n.env)
+  load(inFile3$datapath, envir=n.env)
+  # running my reactive function
+  output$rocAll <- renderPlot({ 
+    roc_mod1 <- plot_roc(n.env$model_1$pred)
+    roc_mod2 <- plot_roc(n.env$model_2$pred)
+    roc_mod3 <- plot_roc(n.env$model_3$pred)
+    ggroc(list(Model_1=roc_mod1, Model_2=roc_mod2, Model3=roc_mod3)) +
+      theme(legend.position = "top")
+  })
+}
 
-load("models/model_1.Rdata")
+# Only load data based on load button
+observeEvent(input$btnLoad,{
+        load_roc()
+})
+# render my reactive function
+plotOutput("rocAll")
 
-
-# model accuracy ----------------------------------------------------------------------------
-
-roc_gbm <- plot_roc(gbm_mod$pred)
-
-ggroc(roc_gbm, alpha = 0.5, colour = "red", size = 1.5)
 ```
 
-### Model 2 Performance (Random Forest)
+### ROC results after 5000 simulations
 
 ```{r}
-load("models/rf_mod.Rdata")
+env <<- NULL
+    
+load_rocMod <- function(){
+  # Message catch
+  if(is.null(input$file1)) return(NULL)
+  if(is.null(input$file2)) return(NULL)
+  if(is.null(input$file3)) return(NULL)
+  # creating load files inside one render function
+  inFile1 <- isolate({ input$file1 })
+  inFile2 <- isolate({ input$file2 })
+  inFile3 <- isolate({ input$file3 })
+  # Create new environment to load data into
+  n.env  <- new.env()
+  env    <<- n.env
+  # Loading files in new environment
+  load(inFile1$datapath, envir=n.env)
+  load(inFile2$datapath, envir=n.env)
+  load(inFile3$datapath, envir=n.env)
+  inFile4 <- input$testdata
 
-# model accuracy ----------------------------------------------------------------------------
+  if (is.null(inFile4))
+      return(NULL)
+  churn_test <- read_csv(inFile4$datapath)
+  
+  mod1 <- n.env$model_1
+  mod2 <- n.env$model_2
+  mod3 <- n.env$model_3
+  
+  rs <- resamples(
+     list(Model1 = mod1, Model2 = mod2, Model3 = mod3)
+  )
+  roc_mod <- perf_mod(rs, seed = seed, iter = 5000)
+  roc_dist <- tidy(roc_mod)
+  temp <- summary(roc_dist)
+  # running my reactive function
+  output$rocDist <- renderTable({ 
+    temp
+  })
+  
+  output$rocDisP <- renderPlot({
+    ggplot(roc_dist) +
+      theme(legend.position = "top")
+  })
+  
+  differences <-
+     contrast_models(
+          roc_mod,
+          list_1 = c("Model2", "Model3"),
+          list_2 = c("Model1", "Model2"),
+          seed = 650
+     )
 
-roc_rf <- plot_roc(rf_mod$pred)
+  pracDif <- input$perdid/100
+  dif <- summary(differences, size = pracDif)
+  output$sumDif <- renderTable({
+    dif
+  })
+  
+  g <- differences %>%
+     mutate(contrast = paste(model_2, "vs", model_1)) %>%
+     ggplot(aes(x = difference, col = contrast)) + 
+     geom_line(stat = "density") + 
+     geom_vline(xintercept = c(-pracDif, pracDif), lty = 2) +
+     theme(legend.position = "top")
+  
+  output$difP <- renderPlot({
+    g
+  })
+  
+  modSlc <- temp %>%
+    filter(mean == max(mean))
+  temp2 <- modSlc$model
+  
+  output$modS <- renderText({
+    temp2
+  })
+  
+  if(temp2 == "Model1"){
+    mod_is <- n.env$model_1
+  } else if(temp2 == "Model2"){
+    mod_is <- n.env$model_2
+  } else {
+    mod_is <- n.env$model_3
+  }
+  
+  output$testRoc <- renderPlot({
+    test_res <- churn_test %>%
+      dplyr::select(Churn) %>%
+      mutate(Churn = as_factor(Churn)) %>%
+      mutate(
+        pred = predict(mod_is, churn_test),
+        prob = predict(mod_is, churn_test, type = "prob")[, "Yes"]
+      ) %>%
+      data.frame
+    roc_curve <- roc(test_res$Churn, test_res$prob, levels = c("No", "Yes"))
+    ggroc(roc_curve, alpha = 0.5, colour = "red", size = 1.5) +
+      theme(legend.position = "top")               
+  })
 
-ggroc(roc_rf, alpha = 0.5, colour = "darkblue", size = 1.5)
+  churn_test$Churn <- as_factor(churn_test$Churn)
+  prediction <- predict(mod_is, churn_test %>% dplyr::select(-Churn))
+  cnfsn <- confusionMatrix(prediction, churn_test$Churn)
+  ratespec <- round(as.numeric(cnfsn$byClass[2]),2)
+  ratesens <- round(as.numeric(cnfsn$byClass[1]),2)
+  
+  output$testSpec <- renderGauge({
+    gauge(ratespec, min = 0, max = 1, gaugeSectors(
+      success = c(.85, 1), warning = c(.51, .84), danger = c(0, .50)
+    ))
+  })
+  
+  output$testSens <- renderGauge({
+    gauge(ratesens, min = 0, max = 1, gaugeSectors(
+      success = c(.85, 1), warning = c(.51, .84), danger = c(0, .50)
+    ))
+  })
+  output$confM <- renderPrint({
+    cnfsn
+  })
+  
+  
+}
+
+# Only load data based on load button
+observeEvent(input$btnLoad,{
+        load_rocMod()
+})
+# render my reactive function
+tableOutput("rocDist")
 ```
 
-### Model 3 Performance (Support Vector Machine)
+### Distribution of all three models
 
 ```{r}
-load("models/svm_mod.Rdata")
-
-# model accuracy ----------------------------------------------------------------------------
-
-roc_svm <- plot_roc(svm_mod$pred)
-
-ggroc(roc_svm, alpha = 0.5, colour = "blue", size = 1.5)
+plotOutput("rocDisP")
 ```
-
-Column {data-width=750}
------------------------------------------------------------------------
-
-### Model Selection
-
-```{r, include=FALSE}
-rs <- resamples(
-     list(Boosting = gbm_mod, RndmFrst = rf_mod, SVM = svm_mod)
-)
-
-roc_mod <- suppressMessages(perf_mod(rs, seed = seed, iter = 5000))
-
-roc_dist <- tidy(roc_mod)
-```
-
-```{r}
-ggplot(roc_dist)
-```
-
-
-Model Appliction
-===================================== 
-
-```{r, include=FALSE}
-test_res <- churn_test %>%
-    dplyr::select(Churn) %>%
-  mutate(Churn = factor(Churn)) %>%
-    mutate(
-        pred = factor(predict(gbm_mod, churn_test)),
-        prob = predict(gbm_mod, churn_test, type = "prob")[, "Yes"]
-    ) %>%
-  data.frame
-roc_curve <- roc(test_res$Churn, test_res$prob, levels = c("No", "Yes"))
-
-prediction <- predict(gbm_mod, churn_test %>% select(-Churn))
-
-temp <- confusionMatrix(prediction, churn_test$Churn)
-```
-
 
 Column {data-width=650}
 -----------------------------------------------------------------------
 
-### Method used
-
-We used Bayesian Hierarchical Linear Model to make our model selection. The distribution of the variance parameters are the prior distributions. The `tidyposterior` package, using *Stan*, is used to perform Bayesian analysis to estimate the probability distribution of the model parameters. Next, we make our decision looking at the difference between the models and selecting the best model that fits in our required business parameter or a practical value that represents our interest.
-
-### Why this model was chosen
-
-```{r, echo=FALSE}
-differences <-
-     contrast_models(
-          roc_mod,
-          list_1 = c("RndmFrst", "SVM"),
-          list_2 = c("Boosting", "RndmFrst"),
-          seed = 650
-     )
-
-summary(differences, size = 0.5)
-```
-
-### Testset Scoring (ROC)
+### Tabular Summary of Model Differences
 
 ```{r}
-ggroc(roc_curve, alpha = 0.5, colour = "green", size = 1.5)
+tableOutput("sumDif")
 ```
 
-Column {data-width=350}
+### Visual Summary of Model Difference
+
+```{r}
+plotOutput("difP")
+```
+
+Final Model Validation
+=====================================
+
+Column {data-width=250}
 -----------------------------------------------------------------------
 
-### Sensitivity - False Prediction rate of Member staying {.value-box}
+### Validation Sensitivity
 
-```{r sens}
-renderValueBox({
-  rate <- formatC(temp$byClass[1], digits = 2, format = "f")
-  valueBox(
-    value = rate,
-    color = if (rate > 80.00) "warning" else "primary"
-  )
-})
+```{r}
+gaugeOutput("testSens")
 ```
 
-### Specificity - False Prediction rate of Member leaving {.value-box}
 
-```{r spec}
-renderValueBox({
-  rate <- formatC(temp$byClass[2], digits = 2, format = "f")
-  valueBox(
-    value = rate,
-    color = if (rate > 50.00) "warning" else "primary"
-  )
-})
+### Validation Specificity
+
+```{r}
+gaugeOutput("testSpec")
 ```
 
-### Confusion Matrix
+### Confusion Matrix of validation set
 
-```{r table}
-temp
+```{r}
+verbatimTextOutput("confM")
 ```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Test data ROC curve
+
+```{r}
+plotOutput("testRoc")
+```
+
+How To
+===================================== 
+
+Automatic for model selection based on Bayesian Mehtod
+
+1. You need to have three caret models stored as model_1, model_2, and model_3
+2. Models can be of any algorithm
+3. Upload test data based on training data used to run models
