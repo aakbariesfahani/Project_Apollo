@@ -1,0 +1,190 @@
+---
+title: "Model Selection"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r, echo=FALSE}
+options(shiny.maxRequestSize=15*1024^2)
+
+library(flexdashboard)
+library(tidyverse)
+library(ggROC)
+library(tidyposterior)
+library(pROC)
+library(caret)
+library(gbm)
+library(shiny)
+
+seed <- 7312
+set.seed(seed)
+
+plot_roc <- function(x) {
+    averaged <- x %>%
+        group_by(rowIndex, obs) %>%
+        summarise(Yes = mean(Yes, na.rm = TRUE))
+    roc_obj <- roc(
+        response = x[["obs"]], 
+        predictor = x[["Yes"]], 
+        levels = rev(levels(x$obs))
+    )
+    return(roc_obj)
+}
+```
+
+Sidebar {.sidebar}
+=====================================
+
+```{r}
+# shiny inputs defined here
+fileInput("file1", label = "Rdata")
+fileInput("file2", label = "Rdata")
+fileInput("file3", label = "Rdata")
+
+actionButton(inputId="btnLoad","Load")
+
+numericInput("perdid",
+             "Enter Practical Difference Percentage", 
+            2.5  ,min = 1, max = 100)
+```
+
+Model Selection
+===================================== 
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### ROC Performance of all Models
+
+```{r}
+env <<- NULL
+    
+load_roc <- function(){
+  # Message catch
+  if(is.null(input$file1)) return(NULL)
+  if(is.null(input$file2)) return(NULL)
+  if(is.null(input$file3)) return(NULL)
+  # creating load files inside one render function
+  inFile1 <- isolate({ input$file1 })
+  inFile2 <- isolate({ input$file2 })
+  inFile3 <- isolate({ input$file3 })
+  # Create new environment to load data into
+  n.env  <- new.env()
+  env    <<- n.env
+  # Loading files in new environment
+  load(inFile1$datapath, envir=n.env)
+  load(inFile2$datapath, envir=n.env)
+  load(inFile3$datapath, envir=n.env)
+  # running my reactive function
+  output$rocAll <- renderPlot({ 
+    roc_mod1 <- plot_roc(n.env$model_1$pred)
+    roc_mod2 <- plot_roc(n.env$model_2$pred)
+    roc_mod3 <- plot_roc(n.env$model_3$pred)
+    ggroc(list(Model_1=roc_mod1, Model_2=roc_mod2, Model3=roc_mod3))
+  })
+}
+
+# Only load data based on load button
+observeEvent(input$btnLoad,{
+        load_roc()
+})
+# render my reactive function
+plotOutput("rocAll")
+
+```
+
+### ROC results after 5000 simulations
+
+```{r}
+env <<- NULL
+    
+load_rocMod <- function(){
+  # Message catch
+  if(is.null(input$file1)) return(NULL)
+  if(is.null(input$file2)) return(NULL)
+  if(is.null(input$file3)) return(NULL)
+  # creating load files inside one render function
+  inFile1 <- isolate({ input$file1 })
+  inFile2 <- isolate({ input$file2 })
+  inFile3 <- isolate({ input$file3 })
+  # Create new environment to load data into
+  n.env  <- new.env()
+  env    <<- n.env
+  # Loading files in new environment
+  load(inFile1$datapath, envir=n.env)
+  load(inFile2$datapath, envir=n.env)
+  load(inFile3$datapath, envir=n.env)
+  
+  mod1 <- n.env$model_1
+  mod2 <- n.env$model_2
+  mod3 <- n.env$model_3
+  
+  rs <- resamples(
+     list(Model1 = mod1, Model2 = mod2, Model3 = mod3)
+  )
+  roc_mod <- perf_mod(rs, seed = seed, iter = 5000)
+  roc_dist <- tidy(roc_mod)
+  # running my reactive function
+  output$rocDist <- renderTable({ 
+    summary(roc_dist)
+  })
+  
+  output$rocDisP <- renderPlot({
+    ggplot(roc_dist)
+  })
+  
+  differences <-
+     contrast_models(
+          roc_mod,
+          list_1 = c("Model2", "Model3"),
+          list_2 = c("Model1", "Model2"),
+          seed = 650
+     )
+
+  pracDif <- input$perdid/100
+  output$sumDif <- renderTable({
+    summary(differences, size = pracDif)
+  })
+  
+  g <- differences %>%
+     mutate(contrast = paste(model_2, "vs", model_1)) %>%
+     ggplot(aes(x = difference, col = contrast)) + 
+     geom_line(stat = "density") + 
+     geom_vline(xintercept = c(-0.05, 0.05), lty = 2)
+  
+  output$difP <- renderPlot({
+    g
+  })
+}
+
+# Only load data based on load button
+observeEvent(input$btnLoad,{
+        load_rocMod()
+})
+# render my reactive function
+tableOutput("rocDist")
+```
+
+### Distribution of all three models
+
+```{r}
+plotOutput("rocDisP")
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Tabular Summary of Model Differences
+```{r}
+tableOutput("sumDif")
+```
+
+### Visual Summary of Model Difference
+
+```{r}
+plotOutput("difP")
+```
+
