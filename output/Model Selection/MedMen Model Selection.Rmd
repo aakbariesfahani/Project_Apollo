@@ -28,7 +28,7 @@ subtitle: A look at customer churn
 
 ## Models used
 
-* Generalized Boosted Modeling (GBM), Classification And Regression Tree (CART), Naive Bayes (NB)
+* Generalized Boosted Modeling (GBM), Random Forest (RF), Naive Bayes (NB)
 
 
 ROC Curves for all three models
@@ -71,3 +71,7 @@ knitr::kable(dif)
 From our statistics, there is no practical difference between the three models, so we would choose the model with fastest performance, in this case, it is the GBM model, which also happens to have highest AUC score.
 
 I would then use the model to create a custom cutoff rate that would allow us to even better predict those customers that are likely to leave and sacrifice those that are stayers. Reaching out to people that would have stayed makes for a better impression while also reaching to more people that are likely to leave.
+
+## How to implement it
+
+https://akbaresfahani.shinyapps.io/project_apollo/#section-model-selection
