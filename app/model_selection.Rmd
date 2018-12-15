@@ -1,5 +1,5 @@
 ---
-title: "Project Apollo"
+title: "Automated Bayesian Model Selector"
 output: 
   flexdashboard::flex_dashboard:
     orientation: columns
